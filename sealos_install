@@ -1,0 +1,105 @@
+source ./env.sh
+
+masters='172.16.120.13'
+nodes='172.16.120.38,172.16.120.39,172.16.120.40'
+passwd=123456
+chart_path=/root/acos-charts
+
+pkg_k8s_img=./pkg/k8s
+pkg_ol_img=./pkg/open-local
+pkg_acos_img=./pkg/acos
+pkg_lvm=./pkg/lvm
+
+load_images(){
+
+  file_path=$1
+  for file in `ls $file_path`
+    do
+      /usr/bin/sealos load -i $file_path/$file
+  done
+}
+##
+if [ ! "`grep sealos_install ${STEP_FILE}`" ];then
+    ECHO_GREEN "安装/usr/bin/sealos"
+    tar zxvf sealos_4.3.0-rc1_linux_amd64.tar.gz sealos && chmod +x sealos && mv sealos /usr/bin
+    CHECK_RESULT $? sealos_install 
+else
+    ECHO_YELLOW "已安装sealos"
+fi
+##
+if [ ! "`grep load_k8s_img ${STEP_FILE}`" ];then
+    ECHO_GREEN "导入k8s相关镜像"
+##
+    /usr/bin/sealos load -i $pkg_k8s_img/kubernetes.tar
+    /usr/bin/sealos load -i $pkg_k8s_img/helm.tar
+    /usr/bin/sealos load -i $pkg_k8s_img/calico.tar
+    CHECK_RESULT $? load_k8s_img
+else
+    ECHO_YELLOW "k8s镜像已导入"
+fi
+##
+#
+if [ ! "`grep k8s_install ${STEP_FILE}`" ];then
+    ECHO_GREEN "安装k8s集群"
+##
+    /usr/bin/sealos run labring/kubernetes:v1.24.16-4.3.0-amd64 labring/helm:v3.8.2 labring/calico:v3.24.1 --masters "${masters}" --nodes "${nodes}" -p "${passwd}"
+    CHECK_RESULT $? k8s_install
+else
+    ECHO_YELLOW "k8s已安装"    
+fi
+
+if [ ! "`grep load_ol_img ${STEP_FILE}`" ];then
+    ECHO_GREEN "导入open-local镜像"
+    load_images $pkg_ol_img
+    CHECK_RESULT $? load_ol_img
+else
+    ECHO_YELLOW "open-local镜像已导入"
+fi
+#
+if [ ! "`grep load_acos_img ${STEP_FILE}`" ];then
+    ECHO_GREEN "导入acos镜像"
+    load_images $pkg_acos_img
+    CHECK_RESULT $? load_acos_img
+else
+    ECHO_YELLOW "acos镜像已导入"
+fi
+
+if [ ! "`grep login_hub ${STEP_FILE}`" ];then
+    ECHO_GREEN "登陆仓库"
+    /usr/bin/sealos login -uadmin -ppassw0rd sealos.hub:5000
+    CHECK_RESULT $? login_hub
+else
+    ECHO_YELLOW "已登陆"
+fi
+
+if [ ! "`grep push_img ${STEP_FILE}`" ];then
+    ECHO_GREEN "推送镜像"
+    for i in `/usr/bin/sealos images|grep 'sealos.hub:5000'|grep -v REPOSITORY|awk '{print $1":"$2}'`
+      do
+        /usr/bin/sealos push $i
+    done
+    CHECK_RESULT $? push_img
+else
+    ECHO_YELLOW "镜像已推送"
+fi
+
+if [ ! "`grep lvm_install ${STEP_FILE}`" ];then
+    ECHO_GREEN "安装lvm"
+
+    sealos exec -r node,master 'which pvcreate' >/dev/null 2>&1
+    if [ $? -ne 0 ];then
+        sealos scp -r node,master "$pkg_lvm/lvm.tgz" '/root/lvm.tgz'
+        sealos exec -r node,master 'cd /root/ && tar -xf lvm.tgz'
+        sealos exec -r node,master 'rpm -ivh /root/lvm-install/* --nodeps --force'
+    fi
+    CHECK_RESULT $? lvm_install
+else
+    ECHO_YELLOW "lvm已安装"
+fi
+bash ./amb.sh $chart_path
+mkdir -p /root/mysql/script
+mkdir -p /root/mysql/backup
+cp ./backup.sh /root/mysql/script
+HOST_NAME=`hostname`
+NODE_NAME=${HOST_NAME,,}
+kubectl label node $NODE_NAME mysql-bak=mysql-bak
